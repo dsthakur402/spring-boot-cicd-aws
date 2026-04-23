@@ -2,7 +2,8 @@
 
 ## High-Level Architecture Overview
 
-<img width="1077" height="745" alt="image" src="https://github.com/user-attachments/assets/e72c8cf7-74ad-49b5-ac97-552ccbd25a23" />
+<img width="1080" height="748" alt="image" src="https://github.com/user-attachments/assets/d87ad17a-a033-4246-8903-4af13706a4cc" />
+
 
 
 ## Architecture Components
