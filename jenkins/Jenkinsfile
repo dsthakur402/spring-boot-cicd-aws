@@ -1,0 +1,210 @@
+#!/usr/bin/env groovy
+
+/**
+ * CloudEagle Sync-Service CI/CD Pipeline
+ * Simple pipeline for Spring Boot application deployment to AWS
+ */
+
+pipeline {
+    agent any
+
+    environment {
+        // Application settings
+        APP_NAME = 'sync-service'
+        AWS_REGION = 'us-west-2'
+        ECR_REPOSITORY = '123456789012.dkr.ecr.us-west-2.amazonaws.com/sync-service'
+
+        // Build version using timestamp and git commit
+        BUILD_VERSION = "${env.BUILD_TIMESTAMP}-${env.GIT_COMMIT?.take(7)}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                echo '📥 Checking out source code...'
+                checkout scm
+
+                script {
+                    // Set build version for display
+                    env.BUILD_TIMESTAMP = sh(script: 'date +%Y%m%d_%H%M%S', returnStdout: true).trim()
+                    currentBuild.displayName = "#${env.BUILD_NUMBER} - ${env.BUILD_TIMESTAMP}"
+                }
+            }
+        }
+
+        stage('Build') {
+            steps {
+                echo '🔨 Building Spring Boot application...'
+                sh '''
+                    # Clean and compile the application
+                    ./mvnw clean compile
+
+                    # Package the application
+                    ./mvnw package -DskipTests=false
+
+                    echo "✅ Build completed successfully!"
+                '''
+            }
+        }
+
+        stage('Test') {
+            steps {
+                echo '🧪 Running tests...'
+                sh '''
+                    # Run unit tests
+                    ./mvnw test
+
+                    echo "✅ All tests passed!"
+                '''
+            }
+
+            post {
+                always {
+                    // Publish test results
+                    publishTestResults testResultsPattern: 'target/surefire-reports/*.xml'
+
+                    // Archive the built JAR file
+                    archiveArtifacts artifacts: 'target/*.jar', allowEmptyArchive: false
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                echo '🐳 Building Docker image...'
+                script {
+                    sh '''
+                        # Build Docker image
+                        docker build -t ${ECR_REPOSITORY}:${BUILD_VERSION} .
+                        docker build -t ${ECR_REPOSITORY}:latest .
+
+                        echo "✅ Docker image built successfully!"
+                        docker images | grep sync-service
+                    '''
+                }
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                echo '☁️ Pushing image to AWS ECR...'
+                sh '''
+                    # Login to AWS ECR
+                    aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REPOSITORY}
+
+                    # Push images
+                    docker push ${ECR_REPOSITORY}:${BUILD_VERSION}
+                    docker push ${ECR_REPOSITORY}:latest
+
+                    echo "✅ Image pushed to ECR successfully!"
+                '''
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                script {
+                    // Determine environment based on branch
+                    def environment = 'qa'  // default
+                    if (env.BRANCH_NAME == 'main') {
+                        environment = 'production'
+                    } else if (env.BRANCH_NAME.startsWith('release/')) {
+                        environment = 'staging'
+                    }
+
+                    echo "🚀 Deploying to ${environment} environment..."
+
+                    // Deploy based on environment
+                    if (environment == 'production') {
+                        // Production deployment with approval
+                        input message: 'Deploy to Production?', ok: 'Deploy',
+                              parameters: [booleanParam(defaultValue: false,
+                                         description: 'Confirm production deployment',
+                                         name: 'CONFIRM')]
+                    }
+
+                    // Simple deployment to ECS
+                    sh """
+                        # Update ECS service with new image
+                        aws ecs update-service \\
+                            --cluster cloudeagle-${environment} \\
+                            --service ${APP_NAME} \\
+                            --force-new-deployment \\
+                            --task-definition ${APP_NAME}:latest
+
+                        echo "✅ Deployment initiated for ${environment}!"
+                    """
+
+                    // Wait for deployment to complete
+                    echo '⏳ Waiting for deployment to complete...'
+                    sh """
+                        aws ecs wait services-stable \\
+                            --cluster cloudeagle-${environment} \\
+                            --services ${APP_NAME}
+                    """
+
+                    echo "✅ Deployment completed successfully!"
+                }
+            }
+        }
+
+        stage('Health Check') {
+            steps {
+                echo '🏥 Running health checks...'
+                script {
+                    // Simple health check
+                    sh '''
+                        # Get the load balancer URL (simplified)
+                        LB_URL=$(aws elbv2 describe-load-balancers \\
+                            --names sync-service-lb \\
+                            --query 'LoadBalancers[0].DNSName' \\
+                            --output text)
+
+                        echo "Checking health at: http://${LB_URL}/actuator/health"
+
+                        # Try health check up to 10 times
+                        for i in {1..10}; do
+                            if curl -f "http://${LB_URL}/actuator/health"; then
+                                echo "✅ Health check passed!"
+                                break
+                            else
+                                echo "⏳ Health check attempt $i/10..."
+                                sleep 30
+                            fi
+                        done
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo '🧹 Cleaning up...'
+            // Clean up Docker images to save space
+            sh 'docker system prune -f || true'
+        }
+
+        success {
+            echo '✅ Pipeline completed successfully!'
+
+            // Send success notification
+            slackSend(
+                channel: '#devops',
+                color: 'good',
+                message: "✅ Deployment successful for ${env.APP_NAME} (${env.BRANCH_NAME}) - Version: ${env.BUILD_VERSION}"
+            )
+        }
+
+        failure {
+            echo '❌ Pipeline failed!'
+
+            // Send failure notification
+            slackSend(
+                channel: '#devops',
+                color: 'danger',
+                message: "❌ Deployment failed for ${env.APP_NAME} (${env.BRANCH_NAME}) - Build: ${env.BUILD_NUMBER}. Check: ${env.BUILD_URL}"
+            )
+        }
+    }
+}

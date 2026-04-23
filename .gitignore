@@ -1,0 +1,43 @@
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Security - never commit secrets
+*.pem
+*.key
+.env
+secrets.yml
+credentials.json
+
+# Build artifacts
+target/
+build/
+*.jar
+*.war
+
+# Docker
+.dockerignore
+
+# Terraform (if added later)
+*.tfstate
+*.tfstate.backup
+.terraform/
+terraform.tfvars
+
+# AWS credentials
+.aws/
+aws-credentials.txt
